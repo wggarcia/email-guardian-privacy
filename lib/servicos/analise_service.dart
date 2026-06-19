@@ -20,12 +20,28 @@ class AnaliseService {
     String assunto,
   ) {
     final phishing = _detectarPhishing(texto, assunto);
+    final manipulacao = _detectarManipulacao(texto, assunto);
     final rastreadores = _detectarRastreadores(html);
     final unsubscribeLink = _detectarUnsubscribe(headers);
     final categoria = _categorizar(texto, assunto, headers, unsubscribeLink);
 
+    // Dark pattern sobrescreve apenas quando não há phishing/suspeito real
+    final tipoFinal = phishing['score'] as int >= 25
+        ? phishing['tipo']
+        : manipulacao['score'] as int >= 40
+            ? '🎭 MANIPULAÇÃO'
+            : phishing['tipo'];
+    final corFinal = phishing['score'] as int >= 25
+        ? phishing['cor']
+        : manipulacao['score'] as int >= 40
+            ? Colors.deepPurple
+            : phishing['cor'];
+
     return {
       ...phishing,
+      'tipo': tipoFinal,
+      'cor': corFinal,
+      'manipulacao': manipulacao,
       'rastreadores': rastreadores,
       'quantidadeRastreadores': rastreadores.length,
       'linkDesinscrever': unsubscribeLink,
@@ -79,6 +95,52 @@ class AnaliseService {
     return 'outros';
   }
 
+  // ── Dark patterns / manipulação ────────────────────────────────────────────
+  static Map<String, dynamic> _detectarManipulacao(String texto, String assunto) {
+    final t = '${texto.toLowerCase()} ${assunto.toLowerCase()}';
+    int score = 0;
+    final categorias = <String>[];
+
+    // Urgência falsa
+    if (RegExp(r'expira hoje|últimas horas|só hoje|acaba em|última chance|restam poucas|por tempo limitado|encerra|agindo agora|aja agora').hasMatch(t)) {
+      score += 25;
+      categorias.add('urgência');
+    }
+
+    // FOMO — fear of missing out
+    if (RegExp(r'você está perdendo|não perca|oportunidade única|apenas para você|selecionado especialmente|convite exclusivo|seus amigos já|missing out').hasMatch(t)) {
+      score += 25;
+      categorias.add('fomo');
+    }
+
+    // Escassez falsa
+    if (RegExp(r'estoque limitado|últimas unidades|quase esgotado|apenas \d+ disponíveis|reservar agora|garantir meu|limited stock|selling fast').hasMatch(t)) {
+      score += 25;
+      categorias.add('escassez');
+    }
+
+    // Clickbait
+    if (RegExp(r'você não vai acreditar|impressionante|inacreditável|esse truque|segredo que|descubra como|revelado|chocante|shocking').hasMatch(t)) {
+      score += 20;
+      categorias.add('clickbait');
+    }
+
+    // Pressão emocional
+    if (RegExp(r'você merece|foi escolhido|parabéns você ganhou|não se arrependa|não deixe para amanhã|você foi selecionado').hasMatch(t)) {
+      score += 20;
+      categorias.add('emocional');
+    }
+
+    // Pressão social falsa
+    if (RegExp(r'\d+ pessoas (já|viram|compraram)|todo mundo está|mais vendido|tendência|viral|best seller|trending').hasMatch(t)) {
+      score += 15;
+      categorias.add('social');
+    }
+
+    score = score.clamp(0, 100);
+    return {'score': score, 'categorias': categorias, 'ehManipulacao': score >= 40};
+  }
+
   static Map<String, dynamic> _detectarPhishing(String texto, String assunto) {
     final t = '${texto.toLowerCase()} ${assunto.toLowerCase()}';
     int score = 0;
@@ -127,7 +189,7 @@ class AnaliseService {
 
   // Gera estatísticas do scan completo
   static Map<String, dynamic> calcularEstatisticas(List<Map<String, dynamic>> emails) {
-    int marketing = 0, golpes = 0, rastreadores = 0, desinscrever = 0;
+    int marketing = 0, golpes = 0, rastreadores = 0, desinscrever = 0, manipulacao = 0;
     final empresasRastreando = <String>{};
     final remetentesMarketing = <String>{};
 
@@ -143,6 +205,7 @@ class AnaliseService {
         if (rem.isNotEmpty) remetentesMarketing.add(rem);
       }
       if (tipo == '🚨 GOLPE' || tipo == '⚠️ PHISHING') golpes++;
+      if (tipo == '🎭 MANIPULAÇÃO') manipulacao++;
       if (r.isNotEmpty) {
         rastreadores++;
         empresasRastreando.addAll(r);
@@ -154,6 +217,7 @@ class AnaliseService {
       'total': emails.length,
       'marketing': marketing,
       'golpes': golpes,
+      'manipulacao': manipulacao,
       'comRastreadores': rastreadores,
       'empresasRastreando': empresasRastreando.length,
       'desinscrever': desinscrever,

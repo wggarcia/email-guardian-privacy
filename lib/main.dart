@@ -11,18 +11,20 @@ import 'package:url_launcher/url_launcher.dart';
 import 'servicos/analise_service.dart';
 import 'servicos/antivirus_service.dart';
 import 'servicos/quarentena_service.dart';
+import 'servicos/notificacao_service.dart';
 import 'telas/tela_scan.dart';
 import 'telas/tela_limpeza.dart';
 import 'telas/tela_seguranca.dart';
 import 'telas/tela_email_detalhe.dart';
+import 'telas/tela_relatorio.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Fix: remove deprecated setStatusBarColor/setNavigationBarColor
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     systemNavigationBarColor: Colors.transparent,
   ));
+  await NotificacaoService.inicializar();
   runApp(const EmailGuardianApp());
 }
 
@@ -93,6 +95,7 @@ class _TelaHomeState extends State<TelaHome> {
 
   // Serviços
   QuarentenaService? _quarentena;
+  bool _precisaVerificar = false;
 
   @override
   void initState() {
@@ -115,6 +118,12 @@ class _TelaHomeState extends State<TelaHome> {
     if (salvo == null) await prefs.setString('inicioTrial', _inicioTrial!.toIso8601String());
 
     _premium = prefs.getBool('premium') ?? false;
+
+    final ultimoScanStr = prefs.getString('ultimo_scan');
+    if (ultimoScanStr != null) {
+      final ultimoScan = DateTime.parse(ultimoScanStr);
+      _precisaVerificar = DateTime.now().difference(ultimoScan).inHours >= 23;
+    }
 
     await _iniciarIAP();
     await _carregarProduto();
@@ -180,7 +189,9 @@ class _TelaHomeState extends State<TelaHome> {
 
     setState(() => _status = '✅ ${user.email}');
 
-    // Mostrar tela de scan (onboarding)
+    await NotificacaoService.solicitarPermissao();
+    await NotificacaoService.agendarLembreteDiario();
+
     if (_emails.isEmpty) await _executarScanOnboarding();
   }
 
@@ -309,11 +320,22 @@ class _TelaHomeState extends State<TelaHome> {
         temp.add(emailMap);
       }
 
+      final statsNovos = AnaliseService.calcularEstatisticas(temp);
       setState(() {
         _emails = temp;
-        _stats = AnaliseService.calcularEstatisticas(temp);
+        _stats = statsNovos;
         _status = '✅ ${temp.length} emails carregados';
       });
+
+      // Salvar timestamp do último scan
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ultimo_scan', DateTime.now().toIso8601String());
+
+      // Notificação imediata se encontrou ameaças
+      final golpes = (statsNovos['golpes'] ?? 0) as int;
+      if (golpes > 0 && !silencioso) {
+        await NotificacaoService.mostrarAlertaAmeaca(golpes);
+      }
     } catch (e) {
       setState(() => _status = '❌ Erro ao carregar');
     } finally {
@@ -375,11 +397,14 @@ class _TelaHomeState extends State<TelaHome> {
 
   Future<void> _logout() async {
     await _googleSignIn.signOut();
+    await NotificacaoService.cancelarTodos();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('email');
+    await prefs.remove('ultimo_scan');
     setState(() {
       _accessToken = null;
       _emailUsuario = null;
+      _quarentena = null;
       _emails.clear();
       _stats = null;
       _status = 'Faça login para começar';
@@ -562,6 +587,9 @@ class _TelaHomeState extends State<TelaHome> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (_precisaVerificar && _emailUsuario != null)
+          _bannerLembrete(),
+
         if (!_premium && !_temAcesso)
           _bannerPremiumCompleto()
         else if (!_premium)
@@ -650,6 +678,27 @@ class _TelaHomeState extends State<TelaHome> {
           ),
 
         const SizedBox(height: 16),
+
+        if (_emails.isNotEmpty)
+          OutlinedButton.icon(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => TelaRelatorio(
+                  emails: _emails,
+                  premium: _temAcesso,
+                  onAssinar: _mostrarPaywall,
+                ),
+              ),
+            ),
+            icon: const Icon(Icons.bar_chart),
+            label: const Text('Ver relatório de segurança'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 44),
+            ),
+          ),
+
+        const SizedBox(height: 12),
         Text(_status, style: const TextStyle(fontSize: 12, color: Colors.white38), textAlign: TextAlign.center),
       ],
     );
@@ -1056,6 +1105,36 @@ class _TelaHomeState extends State<TelaHome> {
               child: Text(
                 _produtoPremium != null ? 'Assinar por ${_produtoPremium!.price}/mês' : 'Assinar Premium',
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bannerLembrete() {
+    return GestureDetector(
+      onTap: () async {
+        setState(() => _precisaVerificar = false);
+        await _carregarEmails();
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.blue.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: const [
+            Icon(Icons.refresh, color: Colors.blue, size: 18),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '📬 Sua caixa não foi verificada há mais de 23h — verificar agora',
+                style: TextStyle(fontSize: 12, color: Colors.blue),
               ),
             ),
           ],
