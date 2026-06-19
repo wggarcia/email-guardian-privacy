@@ -14,6 +14,7 @@ import 'servicos/quarentena_service.dart';
 import 'telas/tela_scan.dart';
 import 'telas/tela_limpeza.dart';
 import 'telas/tela_seguranca.dart';
+import 'telas/tela_email_detalhe.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -198,6 +199,16 @@ class _TelaHomeState extends State<TelaHome> {
 
     if (stats != null) {
       setState(() => _stats = stats);
+
+      // Paywall inteligente com números reais
+      if (!_premium && mounted) {
+        final golpes = (stats['golpes'] ?? 0) as int;
+        final rastreadores = (stats['empresasRastreando'] ?? 0) as int;
+        if (golpes > 0 || rastreadores >= 3) {
+          await Future.delayed(const Duration(milliseconds: 700));
+          if (mounted) _mostrarPaywallInteligente(stats);
+        }
+      }
     }
   }
 
@@ -687,6 +698,18 @@ class _TelaHomeState extends State<TelaHome> {
           child: Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: ListTile(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => TelaEmailDetalhe(
+                    email: e,
+                    premium: _temAcesso,
+                    onAssinar: _mostrarPaywall,
+                    onQuarentenar: _quarentenarEmail,
+                    onDeletar: (id) async => _moverLixeira(id),
+                  ),
+                ),
+              ),
               leading: CircleAvatar(
                 backgroundColor: cor.withValues(alpha: 0.2),
                 child: Text(tipo.split(' ').first, style: const TextStyle(fontSize: 16)),
@@ -760,6 +783,92 @@ class _TelaHomeState extends State<TelaHome> {
           ),
         );
       },
+    );
+  }
+
+  void _mostrarPaywallInteligente(Map<String, dynamic> stats) {
+    final golpes = (stats['golpes'] ?? 0) as int;
+    final rastreadores = (stats['empresasRastreando'] ?? 0) as int;
+    final desinscrever = (stats['desinscrever'] ?? 0) as int;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E1E2E),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (golpes > 0)
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                ),
+                child: Text(
+                  '🚨 Encontrei $golpes email${golpes > 1 ? 's' : ''} com sinais de golpe na sua caixa',
+                  style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 14),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            const Text('💎 Proteja-se com o Premium',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 6),
+            Text(
+              _produtoPremium != null
+                  ? '${_produtoPremium!.price}/mês'
+                  : 'R\$ 4,99/mês',
+              style: const TextStyle(
+                  fontSize: 18,
+                  color: Color(0xFF4A90D9),
+                  fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 18),
+            if (golpes > 0)
+              _beneficio('Isolar $golpes email${golpes > 1 ? 's' : ''} perigoso${golpes > 1 ? 's' : ''} em Quarentena automática'),
+            if (rastreadores > 0)
+              _beneficio(
+                  'Bloquear $rastreadores empresa${rastreadores > 1 ? 's' : ''} que te rastreiam'),
+            if (desinscrever > 0)
+              _beneficio(
+                  'Cancelar $desinscrever newsletter${desinscrever > 1 ? 's' : ''} com 1 toque'),
+            _beneficio('Monitoramento contínuo 24h e alertas'),
+            _beneficio('Limpeza automática de marketing toda hora'),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _comprar();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4A90D9),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('Ativar Premium agora',
+                  style:
+                      TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Agora não',
+                  style: TextStyle(color: Colors.white38)),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
   }
 
