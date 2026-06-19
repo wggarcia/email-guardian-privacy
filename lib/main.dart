@@ -9,9 +9,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'servicos/analise_service.dart';
+import 'servicos/antivirus_service.dart';
+import 'servicos/quarentena_service.dart';
 import 'telas/tela_scan.dart';
 import 'telas/tela_limpeza.dart';
-import 'telas/tela_rastreadores.dart';
+import 'telas/tela_seguranca.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -87,6 +89,9 @@ class _TelaHomeState extends State<TelaHome> {
   // UI
   int _tabAtual = 0;
   final StreamController<String> _progressoCtrl = StreamController<String>.broadcast();
+
+  // Serviços
+  QuarentenaService? _quarentena;
 
   @override
   void initState() {
@@ -167,6 +172,7 @@ class _TelaHomeState extends State<TelaHome> {
     final auth = await user.authentication;
     _accessToken = auth.accessToken;
     _emailUsuario = user.email;
+    _quarentena = QuarentenaService(_accessToken);
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('email', user.email);
@@ -200,10 +206,13 @@ class _TelaHomeState extends State<TelaHome> {
     await _carregarEmails(silencioso: true);
 
     _progressoCtrl.add('Detectando rastreadores...');
-    await Future.delayed(const Duration(milliseconds: 500));
+    await Future.delayed(const Duration(milliseconds: 300));
 
-    _progressoCtrl.add('Identificando remetentes de marketing...');
-    await Future.delayed(const Duration(milliseconds: 500));
+    _progressoCtrl.add('Verificando ameaças e phishing...');
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    _progressoCtrl.add('Analisando autenticidade dos remetentes...');
+    await Future.delayed(const Duration(milliseconds: 300));
 
     _progressoCtrl.add('Calculando estatísticas...');
     final stats = AnaliseService.calcularEstatisticas(_emails);
@@ -259,15 +268,34 @@ class _TelaHomeState extends State<TelaHome> {
         final snippet = json0['snippet'] ?? '';
         final html = _extrairHtml(json0) ?? snippet;
         final analise = AnaliseService.analisar(snippet, html, headers, remetente, assunto);
+        final payload = json0['payload'] as Map<String, dynamic>? ?? {};
+        final antivirus = AntivirusService.analisarCompleto(
+          remetente: remetente,
+          assunto: assunto,
+          snippet: snippet,
+          html: html,
+          headers: headers,
+          payload: payload,
+          phishingExistente: analise,
+        );
 
-        temp.add({
+        final emailMap = <String, dynamic>{
           'id': msg['id'],
           'assunto': assunto,
           'remetente': remetente,
           'data': data,
           'snippet': snippet,
           'analise': analise,
-        });
+          'antivirus': antivirus,
+          'emQuarentena': false,
+        };
+
+        if (_premium && antivirus['precisaQuarentena'] == true) {
+          final ok = await _quarentena?.moverParaQuarentena(msg['id'] as String);
+          if (ok == true) emailMap['emQuarentena'] = true;
+        }
+
+        temp.add(emailMap);
       }
 
       setState(() {
@@ -311,6 +339,17 @@ class _TelaHomeState extends State<TelaHome> {
   Future<void> _removerLote(List<String> ids) async {
     for (final id in ids) await _moverLixeira(id);
     setState(() => _stats = AnaliseService.calcularEstatisticas(_emails));
+  }
+
+  Future<void> _quarentenarEmail(String id) async {
+    final ok = await _quarentena?.moverParaQuarentena(id);
+    if (ok == true && mounted) {
+      setState(() {
+        for (final e in _emails) {
+          if (e['id'] == id) e['emQuarentena'] = true;
+        }
+      });
+    }
   }
 
   Future<void> _comprar() async {
@@ -390,7 +429,12 @@ class _TelaHomeState extends State<TelaHome> {
         children: [
           _buildPainel(),
           _buildEmailsList(),
-          TelaRastreadores(emails: _emails, premium: _temAcesso, onAssinar: _mostrarPaywall),
+          TelaSeguranca(
+            emails: _emails,
+            premium: _temAcesso,
+            onAssinar: _mostrarPaywall,
+            onQuarentenar: _quarentenarEmail,
+          ),
           TeleLimpeza(emails: _emails, premium: _temAcesso, onAssinar: _mostrarPaywall, onRemover: _removerLote),
         ],
       ),
@@ -414,11 +458,14 @@ class _TelaHomeState extends State<TelaHome> {
           ),
           NavigationDestination(
             icon: Badge(
-              isLabelVisible: _emails.any((e) => (e['analise']?['rastreadores'] as Set?)?.isNotEmpty == true),
-              child: const Icon(Icons.visibility_off_outlined),
+              isLabelVisible: _emails.any((e) {
+                final n = e['antivirus']?['ameaca']?['nivel'] as String?;
+                return n == 'CRÍTICO' || n == 'ALTO';
+              }),
+              child: const Icon(Icons.security_outlined),
             ),
-            selectedIcon: const Icon(Icons.visibility_off),
-            label: 'Rastreadores',
+            selectedIcon: const Icon(Icons.security),
+            label: 'Segurança',
           ),
           NavigationDestination(
             icon: const Icon(Icons.cleaning_services_outlined),
@@ -534,6 +581,43 @@ class _TelaHomeState extends State<TelaHome> {
           const SizedBox(height: 12),
         ],
 
+        Builder(builder: (ctx) {
+          final criticos = _emails.where((e) {
+            final n = e['antivirus']?['ameaca']?['nivel'] as String?;
+            return n == 'CRÍTICO' || n == 'ALTO';
+          }).length;
+          if (criticos == 0) return const SizedBox.shrink();
+          return Column(
+            children: [
+              GestureDetector(
+                onTap: () => setState(() => _tabAtual = 2),
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.red.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.security, color: Colors.red),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          '🛡️ Antivírus: $criticos email${criticos > 1 ? 's' : ''} com ameaça${criticos > 1 ? 's' : ''} detectada${criticos > 1 ? 's' : ''}',
+                          style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 13),
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right, color: Colors.red),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+          );
+        }),
+
         if ((s['desinscrever'] as int) > 0)
           _acaoRapida(
             icon: Icons.unsubscribe,
@@ -587,6 +671,8 @@ class _TelaHomeState extends State<TelaHome> {
         final cor = analise['cor'] as Color? ?? Colors.green;
         final temRastreador = (analise['rastreadores'] as Set?)?.isNotEmpty == true;
         final temUnsubscribe = analise['linkDesinscrever'] != null;
+        final avNivel = e['antivirus']?['ameaca']?['nivel'] as String?;
+        final avAlerta = avNivel == 'CRÍTICO' || avNivel == 'ALTO';
 
         return Dismissible(
           key: Key(e['id']),
@@ -643,13 +729,23 @@ class _TelaHomeState extends State<TelaHome> {
                         ),
                       if (temUnsubscribe)
                         Container(
-                          margin: const EdgeInsets.only(top: 4),
+                          margin: const EdgeInsets.only(top: 4, right: 4),
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: Colors.orange.withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: const Text('📧 marketing', style: TextStyle(fontSize: 10, color: Colors.orange)),
+                        ),
+                      if (avAlerta)
+                        Container(
+                          margin: const EdgeInsets.only(top: 4),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text('🛡️ $avNivel', style: const TextStyle(fontSize: 10, color: Colors.red)),
                         ),
                     ],
                   ),
