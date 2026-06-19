@@ -1,0 +1,33 @@
+name: email_guardian_mobile
+description: App Email Guardian
+
+publish_to: 'none'
+
+version: 1.0.1+6
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  http: ^1.2.0
+  google_sign_in: ^6.2.1
+  shared_preferences: ^2.2.0
+  in_app_purchase: ^3.1.5
+  url_launcher: ^6.2.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "icon.png"
+  remove_alpha_ios: true
