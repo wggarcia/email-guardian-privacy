@@ -50,3 +50,4 @@ secrets/
 google-services.json
 *.keystore
 *.jks
+lib/config/secrets.dart

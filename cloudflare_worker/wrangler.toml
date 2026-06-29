@@ -1,0 +1,4 @@
+name = "email-guardian-ai"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+account_id = "8641d1a9dc9fb127a538d0cc9f427d6e"

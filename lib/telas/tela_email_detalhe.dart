@@ -1,8 +1,9 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../servicos/ai_service.dart';
 
-class TelaEmailDetalhe extends StatelessWidget {
+class TelaEmailDetalhe extends StatefulWidget {
   final Map<String, dynamic> email;
   final bool premium;
   final VoidCallback onAssinar;
@@ -19,9 +20,32 @@ class TelaEmailDetalhe extends StatelessWidget {
   });
 
   @override
+  State<TelaEmailDetalhe> createState() => _TelaEmailDetalheState();
+}
+
+class _TelaEmailDetalheState extends State<TelaEmailDetalhe> {
+  Map<String, dynamic>? _aiResult;
+  bool _aiLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _analisarComIA();
+  }
+
+  Future<void> _analisarComIA() async {
+    final result = await AiService.analisar(
+      remetente: widget.email['remetente'] as String? ?? '',
+      assunto: widget.email['assunto'] as String? ?? '',
+      snippet: widget.email['snippet'] as String? ?? '',
+    );
+    if (mounted) setState(() { _aiResult = result; _aiLoading = false; });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final av = email['antivirus'] as Map<String, dynamic>? ?? {};
-    final analise = email['analise'] as Map<String, dynamic>? ?? {};
+    final av = widget.email['antivirus'] as Map<String, dynamic>? ?? {};
+    final analise = widget.email['analise'] as Map<String, dynamic>? ?? {};
     final ameaca = av['ameaca'] as Map<String, dynamic>? ?? {};
     final spoofing = av['spoofing'] as Map<String, dynamic>? ?? {};
     final autenticacao = av['autenticacao'] as Map<String, dynamic>? ?? {};
@@ -49,7 +73,7 @@ class TelaEmailDetalhe extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.delete_outline, color: Colors.red),
             onPressed: () async {
-              await onDeletar(email['id'] as String);
+              await widget.onDeletar(widget.email['id'] as String);
               if (context.mounted) Navigator.pop(context);
             },
           ),
@@ -59,6 +83,8 @@ class TelaEmailDetalhe extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           _buildScoreCard(score, nivel, corNivel),
+          const SizedBox(height: 16),
+          _buildAiCard(),
           const SizedBox(height: 16),
           _buildEmailInfo(),
           const SizedBox(height: 16),
@@ -90,6 +116,98 @@ class TelaEmailDetalhe extends StatelessWidget {
           ],
           _buildAcoes(context, nivel, analise['linkDesinscrever'] as String?),
           const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAiCard() {
+    if (_aiLoading) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.purple.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.purple.withValues(alpha: 0.3)),
+        ),
+        child: const Row(
+          children: [
+            SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.purple)),
+            SizedBox(width: 12),
+            Text('Analisando com IA...', style: TextStyle(fontSize: 13, color: Colors.purple)),
+          ],
+        ),
+      );
+    }
+    if (_aiResult == null) return const SizedBox.shrink();
+
+    final _ = _aiResult!['seguro'] as bool? ?? true;
+    final nivel = (_aiResult!['nivel'] as String? ?? 'seguro').toLowerCase();
+    final resumo = _aiResult!['resumo'] as String? ?? '';
+    final alertas = (_aiResult!['alertas'] as List?)?.cast<String>() ?? [];
+
+    final cor = nivel == 'perigoso'
+        ? Colors.red
+        : nivel == 'suspeito'
+            ? Colors.orange
+            : Colors.green;
+    final icone = nivel == 'perigoso' ? '🚨' : nivel == 'suspeito' ? '⚠️' : '✅';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cor.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cor.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(icone, style: const TextStyle(fontSize: 18)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text('IA: ${nivel.toUpperCase()}',
+                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: cor)),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.purple.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text('Claude AI', style: TextStyle(fontSize: 9, color: Colors.purple, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                    if (resumo.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(resumo, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (alertas.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            ...alertas.map((a) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('• ', style: TextStyle(color: cor, fontSize: 12)),
+                  Expanded(child: Text(a, style: const TextStyle(fontSize: 11, color: Colors.white60))),
+                ],
+              ),
+            )),
+          ],
         ],
       ),
     );
@@ -152,16 +270,16 @@ class TelaEmailDetalhe extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _campo('Assunto', email['assunto'] as String? ?? 'Sem assunto',
+            _campo('Assunto', widget.email['assunto'] as String? ?? 'Sem assunto',
                 style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
             const SizedBox(height: 10),
-            _campo('Remetente', email['remetente'] as String? ?? '',
+            _campo('Remetente', widget.email['remetente'] as String? ?? '',
                 style: const TextStyle(fontSize: 13, color: Colors.white70)),
-            if ((email['snippet'] as String? ?? '').isNotEmpty) ...[
+            if ((widget.email['snippet'] as String? ?? '').isNotEmpty) ...[
               const SizedBox(height: 10),
               _campo(
                 'Prévia',
-                email['snippet'] as String? ?? '',
+                widget.email['snippet'] as String? ?? '',
                 style: const TextStyle(fontSize: 12, color: Colors.white54),
                 maxLines: 3,
               ),
@@ -464,10 +582,10 @@ class TelaEmailDetalhe extends StatelessWidget {
     return Column(
       children: [
         if (ehCritico) ...[
-          if (premium)
+          if (widget.premium)
             ElevatedButton.icon(
               onPressed: () async {
-                await onQuarentenar(email['id'] as String);
+                await widget.onQuarentenar(widget.email['id'] as String);
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -488,7 +606,7 @@ class TelaEmailDetalhe extends StatelessWidget {
             )
           else
             ElevatedButton.icon(
-              onPressed: onAssinar,
+              onPressed: widget.onAssinar,
               icon: const Icon(Icons.lock),
               label: const Text('Premium: quarentena automática'),
               style: ElevatedButton.styleFrom(
@@ -515,7 +633,7 @@ class TelaEmailDetalhe extends StatelessWidget {
         ],
         OutlinedButton.icon(
           onPressed: () async {
-            await onDeletar(email['id'] as String);
+            await widget.onDeletar(widget.email['id'] as String);
             if (context.mounted) Navigator.pop(context);
           },
           icon: const Icon(Icons.delete_outline, color: Colors.red),
