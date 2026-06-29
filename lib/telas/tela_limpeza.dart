@@ -180,9 +180,12 @@ class _TeleLimpezaState extends State<TeleLimpeza> {
                 if (_selecionados.isNotEmpty)
                   ElevatedButton.icon(
                     onPressed: _removendo ? null : _removerSelecionados,
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                    ),
                     icon: _removendo
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                         : const Icon(Icons.delete),
                     label: Text('Remover ${_selecionados.length} selecionados'),
                   ),
@@ -227,6 +230,7 @@ class _TeleLimpezaState extends State<TeleLimpeza> {
       onPressed: _desinscreverTodos,
       style: ElevatedButton.styleFrom(
         backgroundColor: const Color(0xFFE65100),
+        foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(vertical: 14),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),

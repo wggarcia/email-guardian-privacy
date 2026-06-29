@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import 'package:in_app_purchase/in_app_purchase.dart';
@@ -10,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'servicos/analise_service.dart';
 import 'servicos/antivirus_service.dart';
+import 'servicos/imap_service.dart';
 import 'servicos/quarentena_service.dart';
 import 'servicos/notificacao_service.dart';
 import 'telas/tela_scan.dart';
@@ -17,6 +19,8 @@ import 'telas/tela_limpeza.dart';
 import 'telas/tela_seguranca.dart';
 import 'telas/tela_email_detalhe.dart';
 import 'telas/tela_relatorio.dart';
+import 'telas/tela_adicionar_conta.dart';
+import 'telas/tela_privacidade.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +43,9 @@ class EmailGuardianApp extends StatelessWidget {
       theme: ThemeData.dark().copyWith(
         colorScheme: ColorScheme.dark(
           primary: const Color(0xFF4A90D9),
+          onPrimary: Colors.white,
           secondary: const Color(0xFF4A90D9),
+          onSecondary: Colors.white,
           surface: const Color(0xFF1E1E2E),
         ),
         scaffoldBackgroundColor: const Color(0xFF0A0A1A),
@@ -69,33 +75,41 @@ class TelaHome extends StatefulWidget {
 }
 
 class _TelaHomeState extends State<TelaHome> {
-  // Auth
+  // ── Auth ───────────────────────────────────────────────────────────────────
   final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: ['email', 'https://www.googleapis.com/auth/gmail.modify'],
   );
   String? _accessToken;
   String? _emailUsuario;
 
-  // Data
+  // ── IMAP accounts ──────────────────────────────────────────────────────────
+  List<Map<String, dynamic>> _contasImap = [];
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
+  // ── Data ───────────────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _emails = [];
   Map<String, dynamic>? _stats;
   bool _carregando = false;
   String _status = 'Faça login para começar';
 
-  // Premium / trial
+  // ── Premium / trial ────────────────────────────────────────────────────────
   bool _premium = false;
   DateTime? _inicioTrial;
   ProductDetails? _produtoPremium;
   late StreamSubscription<List<PurchaseDetails>> _iapSub;
   final InAppPurchase _iap = InAppPurchase.instance;
 
-  // UI
+  // ── UI ─────────────────────────────────────────────────────────────────────
   int _tabAtual = 0;
   final StreamController<String> _progressoCtrl = StreamController<String>.broadcast();
 
-  // Serviços
+  // ── Serviços ───────────────────────────────────────────────────────────────
   QuarentenaService? _quarentena;
   bool _precisaVerificar = false;
+
+  bool get _temConta => _emailUsuario != null || _contasImap.isNotEmpty;
 
   @override
   void initState() {
@@ -125,6 +139,12 @@ class _TelaHomeState extends State<TelaHome> {
       _precisaVerificar = DateTime.now().difference(ultimoScan).inHours >= 23;
     }
 
+    // Carregar contas IMAP salvas
+    final contasJson = prefs.getString('imap_contas');
+    if (contasJson != null) {
+      _contasImap = (json.decode(contasJson) as List).cast<Map<String, dynamic>>();
+    }
+
     await _iniciarIAP();
     await _carregarProduto();
 
@@ -132,6 +152,11 @@ class _TelaHomeState extends State<TelaHome> {
     if (emailSalvo != null) {
       final user = await _googleSignIn.signInSilently();
       if (user != null) await _autenticar(user);
+    }
+
+    // Se tem IMAP mas não Gmail, carregar emails IMAP
+    if (_emailUsuario == null && _contasImap.isNotEmpty) {
+      await _carregarEmails();
     }
 
     final consentimento = prefs.getBool('consentimento') ?? false;
@@ -167,6 +192,8 @@ class _TelaHomeState extends State<TelaHome> {
     if (_inicioTrial == null) return false;
     return DateTime.now().difference(_inicioTrial!).inDays < 7;
   }
+
+  // ── Gmail OAuth ────────────────────────────────────────────────────────────
 
   Future<void> _login() async {
     try {
@@ -211,7 +238,6 @@ class _TelaHomeState extends State<TelaHome> {
     if (stats != null) {
       setState(() => _stats = stats);
 
-      // Paywall inteligente com números reais
       if (!_premium && mounted) {
         final golpes = (stats['golpes'] ?? 0) as int;
         final rastreadores = (stats['empresasRastreando'] ?? 0) as int;
@@ -237,14 +263,56 @@ class _TelaHomeState extends State<TelaHome> {
     await Future.delayed(const Duration(milliseconds: 300));
 
     _progressoCtrl.add('Calculando estatísticas...');
-    final stats = AnaliseService.calcularEstatisticas(_emails);
-
-    return stats;
+    return AnaliseService.calcularEstatisticas(_emails);
   }
 
+  // ── Carregamento de emails ─────────────────────────────────────────────────
+
   Future<void> _carregarEmails({bool silencioso = false}) async {
-    if (_accessToken == null) return;
+    final temGmail = _accessToken != null;
+    final temImap = _contasImap.isNotEmpty;
+    if (!temGmail && !temImap) return;
+
     if (!silencioso) setState(() { _carregando = true; _status = '📥 Carregando emails...'; });
+
+    try {
+      final futures = <Future<List<Map<String, dynamic>>>>[];
+      if (temGmail) futures.add(_buscarEmailsGmail());
+      for (final c in _contasImap) futures.add(_buscarEmailsImap(c));
+
+      final resultados = await Future.wait(futures);
+      final todos = resultados.expand((r) => r).toList();
+
+      todos.sort((a, b) {
+        try {
+          final da = DateTime.tryParse(a['data'] ?? '') ?? DateTime(2000);
+          final db = DateTime.tryParse(b['data'] ?? '') ?? DateTime(2000);
+          return db.compareTo(da);
+        } catch (_) { return 0; }
+      });
+
+      final stats = AnaliseService.calcularEstatisticas(todos);
+      setState(() {
+        _emails = todos;
+        _stats = stats;
+        _status = '✅ ${todos.length} email${todos.length != 1 ? 's' : ''} carregado${todos.length != 1 ? 's' : ''}';
+      });
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('ultimo_scan', DateTime.now().toIso8601String());
+
+      final golpes = (stats['golpes'] ?? 0) as int;
+      if (golpes > 0 && !silencioso) await NotificacaoService.mostrarAlertaAmeaca(golpes);
+    } catch (e) {
+      setState(() => _status = '❌ Erro ao carregar');
+    } finally {
+      if (!silencioso) setState(() => _carregando = false);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _buscarEmailsGmail() async {
+    if (_accessToken == null) return [];
+    final temp = <Map<String, dynamic>>[];
 
     try {
       final res = await http.get(
@@ -257,16 +325,15 @@ class _TelaHomeState extends State<TelaHome> {
         if (user != null) {
           final auth = await user.authentication;
           _accessToken = auth.accessToken;
-          return _carregarEmails(silencioso: silencioso);
+          return _buscarEmailsGmail();
         }
-        return;
+        return temp;
       }
 
-      if (res.statusCode != 200) return;
+      if (res.statusCode != 200) return temp;
 
       final data = json.decode(res.body);
       final lista = (data['messages'] ?? []) as List;
-      final temp = <Map<String, dynamic>>[];
 
       for (final msg in lista.take(30)) {
         final detalhe = await http.get(
@@ -310,6 +377,7 @@ class _TelaHomeState extends State<TelaHome> {
           'analise': analise,
           'antivirus': antivirus,
           'emQuarentena': false,
+          'conta': _emailUsuario,
         };
 
         if (_premium && antivirus['precisaQuarentena'] == true) {
@@ -319,28 +387,49 @@ class _TelaHomeState extends State<TelaHome> {
 
         temp.add(emailMap);
       }
+    } catch (_) {}
 
-      final statsNovos = AnaliseService.calcularEstatisticas(temp);
-      setState(() {
-        _emails = temp;
-        _stats = statsNovos;
-        _status = '✅ ${temp.length} emails carregados';
-      });
+    return temp;
+  }
 
-      // Salvar timestamp do último scan
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('ultimo_scan', DateTime.now().toIso8601String());
+  Future<List<Map<String, dynamic>>> _buscarEmailsImap(Map<String, dynamic> conta) async {
+    final email = conta['email'] as String;
+    final password = await _storage.read(key: 'imap_$email');
+    if (password == null) return [];
 
-      // Notificação imediata se encontrou ameaças
-      final golpes = (statsNovos['golpes'] ?? 0) as int;
-      if (golpes > 0 && !silencioso) {
-        await NotificacaoService.mostrarAlertaAmeaca(golpes);
-      }
-    } catch (e) {
-      setState(() => _status = '❌ Erro ao carregar');
-    } finally {
-      if (!silencioso) setState(() => _carregando = false);
-    }
+    final brutos = await ImapService.buscarEmails(
+      email: email,
+      password: password,
+      host: conta['host'] as String,
+      port: conta['port'] as int,
+      ssl: conta['ssl'] as bool,
+    );
+
+    return brutos.map((b) {
+      final remetente = b['remetente'] as String;
+      final assunto = b['assunto'] as String;
+      final snippet = b['snippet'] as String;
+      final html = (b['html'] as String?) ?? '';
+      final headers = b['headers'] as List<dynamic>;
+
+      final analise = AnaliseService.analisar(snippet, html, headers, remetente, assunto);
+      final antivirus = AntivirusService.analisarCompleto(
+        remetente: remetente,
+        assunto: assunto,
+        snippet: snippet,
+        html: html,
+        headers: headers,
+        payload: const {},
+        phishingExistente: analise,
+      );
+
+      return <String, dynamic>{
+        ...b,
+        'analise': analise,
+        'antivirus': antivirus,
+        'emQuarentena': false,
+      };
+    }).toList();
   }
 
   String? _extrairHtml(Map<String, dynamic> json0) {
@@ -360,7 +449,111 @@ class _TelaHomeState extends State<TelaHome> {
     return null;
   }
 
+  // ── Gestão de contas IMAP ─────────────────────────────────────────────────
+
+  Future<void> _adicionarConta() async {
+    final result = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => const TelaAdicionarConta()),
+    );
+    if (result == null || !mounted) return;
+
+    setState(() => _contasImap.add(result));
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('imap_contas', json.encode(_contasImap));
+
+    final emailsAntes = _emails.length;
+    await _carregarEmails();
+
+    if (mounted && _emails.length == emailsAntes && _contasImap.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ Não foi possível carregar emails. Verifique as credenciais e se o IMAP está ativado no provedor.'),
+          duration: Duration(seconds: 6),
+          backgroundColor: Color(0xFF5C3317),
+        ),
+      );
+    }
+  }
+
+  Future<void> _removerContaImap(String email) async {
+    await _storage.delete(key: 'imap_$email');
+    setState(() {
+      _contasImap.removeWhere((c) => c['email'] == email);
+      _emails.removeWhere((e) => e['conta'] == email);
+      _stats = AnaliseService.calcularEstatisticas(_emails);
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('imap_contas', json.encode(_contasImap));
+  }
+
+  void _mostrarGerenciarContas() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1E1E2E),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => StatefulBuilder(builder: (ctx, setS) {
+        return Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Contas conectadas',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 12),
+              if (_emailUsuario != null)
+                ListTile(
+                  leading: const CircleAvatar(child: Icon(Icons.account_circle)),
+                  title: Text(_emailUsuario!),
+                  subtitle: const Text('Gmail (Google)'),
+                  trailing: TextButton(
+                    onPressed: () async {
+                      Navigator.pop(ctx);
+                      await _logout();
+                    },
+                    child: const Text('Sair', style: TextStyle(color: Colors.red)),
+                  ),
+                ),
+              ..._contasImap.map((c) => ListTile(
+                    leading: const CircleAvatar(
+                      backgroundColor: Colors.blue,
+                      child: Icon(Icons.mail, color: Colors.white, size: 18),
+                    ),
+                    title: Text(c['email'] as String),
+                    subtitle: Text(c['host'] as String),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        await _removerContaImap(c['email'] as String);
+                      },
+                    ),
+                  )),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _adicionarConta();
+                },
+                icon: const Icon(Icons.add),
+                label: const Text('Adicionar outra conta'),
+              ),
+            ],
+          ),
+        );
+      }),
+    );
+  }
+
+  // ── Ações sobre emails ─────────────────────────────────────────────────────
+
   Future<void> _moverLixeira(String id) async {
+    if (id.startsWith('imap_')) {
+      setState(() => _emails.removeWhere((e) => e['id'] == id));
+      return;
+    }
     if (_accessToken == null) return;
     await http.post(
       Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$id/trash'),
@@ -375,6 +568,7 @@ class _TelaHomeState extends State<TelaHome> {
   }
 
   Future<void> _quarentenarEmail(String id) async {
+    if (id.startsWith('imap_')) return;
     final ok = await _quarentena?.moverParaQuarentena(id);
     if (ok == true && mounted) {
       setState(() {
@@ -384,6 +578,8 @@ class _TelaHomeState extends State<TelaHome> {
       });
     }
   }
+
+  // ── IAP ────────────────────────────────────────────────────────────────────
 
   Future<void> _comprar() async {
     if (!await _iap.isAvailable()) return;
@@ -398,15 +594,70 @@ class _TelaHomeState extends State<TelaHome> {
   Future<void> _logout() async {
     await _googleSignIn.signOut();
     await NotificacaoService.cancelarTodos();
+    for (final c in _contasImap) {
+      await _storage.delete(key: 'imap_${c['email']}');
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('email');
     await prefs.remove('ultimo_scan');
+    await prefs.remove('imap_contas');
     setState(() {
       _accessToken = null;
       _emailUsuario = null;
       _quarentena = null;
+      _contasImap.clear();
       _emails.clear();
       _stats = null;
+      _status = 'Faça login para começar';
+    });
+  }
+
+  // LGPD Art. 18 — exclusão completa de todos os dados locais
+  Future<void> _excluirTodosDados() async {
+    if (!mounted) return;
+    final confirmou = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('⚠️ Excluir todos os dados?'),
+        content: const Text(
+          'Isso irá:\n\n'
+          '• Desconectar todas as contas\n'
+          '• Apagar senhas salvas no Keychain\n'
+          '• Limpar todas as preferências locais\n'
+          '• Revogar seu consentimento LGPD\n\n'
+          'Equivale ao direito de eliminação (LGPD Art. 18, IV).\n\n'
+          'Esta ação não pode ser desfeita.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Excluir tudo'),
+          ),
+        ],
+      ),
+    );
+    if (confirmou != true || !mounted) return;
+
+    await _googleSignIn.signOut();
+    await NotificacaoService.cancelarTodos();
+    await _storage.deleteAll();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+
+    setState(() {
+      _accessToken = null;
+      _emailUsuario = null;
+      _quarentena = null;
+      _contasImap.clear();
+      _emails.clear();
+      _stats = null;
+      _premium = false;
+      _inicioTrial = null;
       _status = 'Faça login para começar';
     });
   }
@@ -416,10 +667,36 @@ class _TelaHomeState extends State<TelaHome> {
       context: context,
       barrierDismissible: false,
       builder: (_) => AlertDialog(
-        title: const Text('🔒 Privacidade'),
-        content: const Text(
-          'O Email Guardian analisa seus emails para detectar golpes, rastreadores e marketing.\n\n'
-          'Os dados são processados localmente no dispositivo. Nenhum conteúdo é enviado para servidores externos.',
+        title: const Text('🔒 Consentimento — LGPD'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'O Email Guardian solicita seu consentimento (LGPD Art. 7º, I) para:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              const SizedBox(height: 10),
+              _textoConsentimento('🔍 Analisar o conteúdo dos seus emails para detectar golpes, phishing, rastreadores e marketing.'),
+              _textoConsentimento('📱 Armazenar localmente seu endereço de email e credenciais IMAP (no Keychain do dispositivo).'),
+              _textoConsentimento('🔔 Enviar notificações locais de alerta de segurança.'),
+              const SizedBox(height: 10),
+              const Text(
+                '✅ O que NUNCA fazemos:',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green),
+              ),
+              const SizedBox(height: 6),
+              _textoConsentimento('Nenhum conteúdo de email é enviado a servidores externos.'),
+              _textoConsentimento('Não compartilhamos dados com terceiros.'),
+              _textoConsentimento('Não usamos analytics ou rastreamento de comportamento.'),
+              const SizedBox(height: 10),
+              const Text(
+                'Seus direitos (LGPD Art. 18): acesso, correção, eliminação e revogação do consentimento a qualquer momento em Menu → Privacidade.',
+                style: TextStyle(fontSize: 11, color: Colors.white54, height: 1.4),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -428,16 +705,31 @@ class _TelaHomeState extends State<TelaHome> {
               await prefs.setBool('consentimento', true);
               if (mounted) Navigator.pop(context);
             },
-            child: const Text('Entendi e aceito'),
+            child: const Text('Li e consinto'),
           ),
         ],
       ),
     );
   }
 
+  Widget _textoConsentimento(String texto) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('• ', style: TextStyle(color: Colors.white54)),
+          Expanded(child: Text(texto, style: const TextStyle(fontSize: 12, color: Colors.white70, height: 1.4))),
+        ],
+      ),
+    );
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    if (_emailUsuario == null) return _buildLogin();
+    if (!_temConta) return _buildLogin();
 
     return Scaffold(
       appBar: AppBar(
@@ -448,14 +740,26 @@ class _TelaHomeState extends State<TelaHome> {
             child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
           ),
           IconButton(icon: const Icon(Icons.refresh), onPressed: () => _carregarEmails()),
-          PopupMenuButton(
-            itemBuilder: (_) => [
-              PopupMenuItem(value: 'logout', child: const Text('Sair da conta')),
-              PopupMenuItem(value: 'privacidade', child: const Text('Política de privacidade')),
+          PopupMenuButton<String>(
+            itemBuilder: (_) => <PopupMenuEntry<String>>[
+              const PopupMenuItem(value: 'contas', child: Text('Gerenciar contas')),
+              const PopupMenuItem(value: 'adicionar', child: Text('Adicionar conta')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'privacidade_lgpd', child: Text('🔒 Privacidade e LGPD')),
+              const PopupMenuItem(value: 'excluir_dados', child: Text('⚠️ Excluir meus dados', style: TextStyle(color: Colors.red))),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'logout', child: Text('Sair de todas as contas')),
             ],
             onSelected: (v) async {
+              if (v == 'contas') _mostrarGerenciarContas();
+              if (v == 'adicionar') await _adicionarConta();
+              if (v == 'privacidade_lgpd') {
+                Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => TelaPrivacidade(onExcluirDados: _excluirTodosDados),
+                ));
+              }
+              if (v == 'excluir_dados') await _excluirTodosDados();
               if (v == 'logout') await _logout();
-              if (v == 'privacidade') await launchUrl(Uri.parse('https://wggarcia.github.io/email-guardian-privacy/'));
             },
           ),
         ],
@@ -479,9 +783,9 @@ class _TelaHomeState extends State<TelaHome> {
         onDestinationSelected: (i) => setState(() => _tabAtual = i),
         backgroundColor: const Color(0xFF1E1E2E),
         destinations: [
-          NavigationDestination(
-            icon: const Icon(Icons.dashboard_outlined),
-            selectedIcon: const Icon(Icons.dashboard),
+          const NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard),
             label: 'Painel',
           ),
           NavigationDestination(
@@ -503,9 +807,9 @@ class _TelaHomeState extends State<TelaHome> {
             selectedIcon: const Icon(Icons.security),
             label: 'Segurança',
           ),
-          NavigationDestination(
-            icon: const Icon(Icons.cleaning_services_outlined),
-            selectedIcon: const Icon(Icons.cleaning_services),
+          const NavigationDestination(
+            icon: Icon(Icons.cleaning_services_outlined),
+            selectedIcon: Icon(Icons.cleaning_services),
             label: 'Limpeza',
           ),
         ],
@@ -546,7 +850,32 @@ class _TelaHomeState extends State<TelaHome> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
                 icon: const Icon(Icons.login),
-                label: const Text('Entrar com Google', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                label: const Text('Entrar com Google (Gmail)', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              const SizedBox(height: 16),
+              const Row(
+                children: [
+                  Expanded(child: Divider(color: Colors.white24)),
+                  Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: Text('ou', style: TextStyle(color: Colors.white38)),
+                  ),
+                  Expanded(child: Divider(color: Colors.white24)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: _adicionarConta,
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  side: const BorderSide(color: Color(0xFF4A90D9)),
+                ),
+                icon: const Icon(Icons.mail_outline, color: Color(0xFF4A90D9)),
+                label: const Text(
+                  'Outlook, Yahoo, iCloud e outros',
+                  style: TextStyle(fontSize: 15, color: Color(0xFF4A90D9), fontWeight: FontWeight.w600),
+                ),
               ),
               const SizedBox(height: 16),
               TextButton(
@@ -587,7 +916,7 @@ class _TelaHomeState extends State<TelaHome> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        if (_precisaVerificar && _emailUsuario != null)
+        if (_precisaVerificar && _temConta)
           _bannerLembrete(),
 
         if (!_premium && !_temAcesso)
@@ -733,6 +1062,11 @@ class _TelaHomeState extends State<TelaHome> {
         final temUnsubscribe = analise['linkDesinscrever'] != null;
         final avNivel = e['antivirus']?['ameaca']?['nivel'] as String?;
         final avAlerta = avNivel == 'CRÍTICO' || avNivel == 'ALTO';
+        final ehImap = e['ehImap'] == true;
+        final conta = e['conta'] as String?;
+        final contaLabel = conta != null && conta.contains('@')
+            ? '@${conta.split('@').last}'
+            : null;
 
         return Dismissible(
           key: Key(e['id']),
@@ -778,47 +1112,19 @@ class _TelaHomeState extends State<TelaHome> {
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 11, color: Colors.white60),
                   ),
-                  Row(
+                  Wrap(
+                    spacing: 4,
+                    runSpacing: 2,
                     children: [
-                      Container(
-                        margin: const EdgeInsets.only(top: 4, right: 4),
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: cor.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(tipo, style: TextStyle(fontSize: 10, color: cor)),
-                      ),
+                      _chip(tipo, cor),
+                      if (ehImap && contaLabel != null)
+                        _chip(contaLabel, Colors.blueGrey),
                       if (temRastreador)
-                        Container(
-                          margin: const EdgeInsets.only(top: 4, right: 4),
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.purple.withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: const Text('🕵️ rastreador', style: TextStyle(fontSize: 10, color: Colors.purple)),
-                        ),
+                        _chip('🕵️ rastreador', Colors.purple),
                       if (temUnsubscribe)
-                        Container(
-                          margin: const EdgeInsets.only(top: 4, right: 4),
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: const Text('📧 marketing', style: TextStyle(fontSize: 10, color: Colors.orange)),
-                        ),
+                        _chip('📧 marketing', Colors.orange),
                       if (avAlerta)
-                        Container(
-                          margin: const EdgeInsets.only(top: 4),
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.red.withValues(alpha: 0.2),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text('🛡️ $avNivel', style: const TextStyle(fontSize: 10, color: Colors.red)),
-                        ),
+                        _chip('🛡️ $avNivel', Colors.red),
                     ],
                   ),
                 ],
@@ -834,6 +1140,20 @@ class _TelaHomeState extends State<TelaHome> {
       },
     );
   }
+
+  Widget _chip(String label, Color cor) {
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: cor.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(label, style: TextStyle(fontSize: 10, color: cor)),
+    );
+  }
+
+  // ── Paywall ────────────────────────────────────────────────────────────────
 
   void _mostrarPaywallInteligente(Map<String, dynamic> stats) {
     final golpes = (stats['golpes'] ?? 0) as int;
@@ -872,47 +1192,33 @@ class _TelaHomeState extends State<TelaHome> {
                 textAlign: TextAlign.center),
             const SizedBox(height: 6),
             Text(
-              _produtoPremium != null
-                  ? '${_produtoPremium!.price}/mês'
-                  : 'R\$ 4,99/mês',
-              style: const TextStyle(
-                  fontSize: 18,
-                  color: Color(0xFF4A90D9),
-                  fontWeight: FontWeight.bold),
+              _produtoPremium != null ? '${_produtoPremium!.price}/mês' : 'R\$ 4,99/mês',
+              style: const TextStyle(fontSize: 18, color: Color(0xFF4A90D9), fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 18),
             if (golpes > 0)
               _beneficio('Isolar $golpes email${golpes > 1 ? 's' : ''} perigoso${golpes > 1 ? 's' : ''} em Quarentena automática'),
             if (rastreadores > 0)
-              _beneficio(
-                  'Bloquear $rastreadores empresa${rastreadores > 1 ? 's' : ''} que te rastreiam'),
+              _beneficio('Bloquear $rastreadores empresa${rastreadores > 1 ? 's' : ''} que te rastreiam'),
             if (desinscrever > 0)
-              _beneficio(
-                  'Cancelar $desinscrever newsletter${desinscrever > 1 ? 's' : ''} com 1 toque'),
+              _beneficio('Cancelar $desinscrever newsletter${desinscrever > 1 ? 's' : ''} com 1 toque'),
             _beneficio('Monitoramento contínuo 24h e alertas'),
             _beneficio('Limpeza automática de marketing toda hora'),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _comprar();
-              },
+              onPressed: () { Navigator.pop(context); _comprar(); },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4A90D9),
                 padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
-              child: const Text('Ativar Premium agora',
-                  style:
-                      TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              child: const Text('Ativar Premium agora', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ),
             const SizedBox(height: 8),
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Agora não',
-                  style: TextStyle(color: Colors.white38)),
+              child: const Text('Agora não', style: TextStyle(color: Colors.white38)),
             ),
             const SizedBox(height: 8),
           ],
@@ -961,7 +1267,10 @@ class _TelaHomeState extends State<TelaHome> {
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                TextButton(onPressed: () { Navigator.pop(context); _iap.restorePurchases(); }, child: const Text('Restaurar compra')),
+                TextButton(
+                  onPressed: () { Navigator.pop(context); _iap.restorePurchases(); },
+                  child: const Text('Restaurar compra'),
+                ),
                 const Text('·', style: TextStyle(color: Colors.white38)),
                 TextButton(
                   onPressed: () => launchUrl(Uri.parse('https://www.apple.com/legal/internet-services/itunes/dev/stdeula/')),
@@ -977,6 +1286,8 @@ class _TelaHomeState extends State<TelaHome> {
       ),
     );
   }
+
+  // ── Widgets auxiliares ─────────────────────────────────────────────────────
 
   Widget _statCard(String valor, String label, IconData icon, Color cor) {
     return Container(
@@ -1127,8 +1438,8 @@ class _TelaHomeState extends State<TelaHome> {
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
         ),
-        child: Row(
-          children: const [
+        child: const Row(
+          children: [
             Icon(Icons.refresh, color: Colors.blue, size: 18),
             SizedBox(width: 10),
             Expanded(
