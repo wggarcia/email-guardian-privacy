@@ -114,7 +114,12 @@ class _TelaHomeState extends State<TelaHome> {
   @override
   void initState() {
     super.initState();
-    _inicializar();
+    // Rede de segurança final: NENHUMA falha de inicialização (Google
+    // Sign-In, IAP/Billing, SharedPreferences corrompido, etc.) pode derrubar
+    // o app. É exatamente isto que o revisor automático do Google verifica.
+    _inicializar().catchError((_) {
+      if (mounted) setState(() => _status = 'Erro ao iniciar — tente novamente');
+    });
   }
 
   @override
@@ -142,21 +147,40 @@ class _TelaHomeState extends State<TelaHome> {
     // Carregar contas IMAP salvas
     final contasJson = prefs.getString('imap_contas');
     if (contasJson != null) {
-      _contasImap = (json.decode(contasJson) as List).cast<Map<String, dynamic>>();
+      try {
+        _contasImap = (json.decode(contasJson) as List).cast<Map<String, dynamic>>();
+      } catch (_) {
+        _contasImap = [];
+      }
     }
 
-    await _iniciarIAP();
-    await _carregarProduto();
+    // Faturamento (IAP): nunca deve derrubar o app na inicialização — se a
+    // Play Store / Billing Library não responder (ex.: ambiente de revisão do
+    // Google, dispositivo sem conta configurada), apenas seguimos sem premium.
+    try {
+      await _iniciarIAP();
+      await _carregarProduto();
+    } catch (_) {}
 
-    final emailSalvo = prefs.getString('email');
-    if (emailSalvo != null) {
-      final user = await _googleSignIn.signInSilently();
-      if (user != null) await _autenticar(user);
+    // Login silencioso do Google: se o token salvo não puder ser renovado
+    // (conta revogada, sem Play Services, ambiente de teste automatizado),
+    // isso nunca deve travar o app — o usuário volta para a tela de login.
+    try {
+      final emailSalvo = prefs.getString('email');
+      if (emailSalvo != null) {
+        final user = await _googleSignIn.signInSilently();
+        if (user != null) await _autenticar(user);
+      }
+    } catch (_) {
+      _accessToken = null;
+      _emailUsuario = null;
     }
 
     // Se tem IMAP mas não Gmail, carregar emails IMAP
     if (_emailUsuario == null && _contasImap.isNotEmpty) {
-      await _carregarEmails();
+      try {
+        await _carregarEmails();
+      } catch (_) {}
     }
 
     final consentimento = prefs.getBool('consentimento') ?? false;
@@ -164,7 +188,7 @@ class _TelaHomeState extends State<TelaHome> {
       Future.delayed(Duration.zero, _mostrarConsentimento);
     }
 
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   Future<void> _iniciarIAP() async {
@@ -174,17 +198,19 @@ class _TelaHomeState extends State<TelaHome> {
         if (p.status == PurchaseStatus.purchased || p.status == PurchaseStatus.restored) {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setBool('premium', true);
-          setState(() { _premium = true; _status = '💎 Premium ativado'; });
+          if (mounted) setState(() { _premium = true; _status = '💎 Premium ativado'; });
           if (p.pendingCompletePurchase) await _iap.completePurchase(p);
         }
       }
-    });
+    }, onError: (_) {});
   }
 
   Future<void> _carregarProduto() async {
     if (!await _iap.isAvailable()) return;
     final r = await _iap.queryProductDetails({'premium_mensal'});
-    if (r.productDetails.isNotEmpty) setState(() => _produtoPremium = r.productDetails.first);
+    if (r.productDetails.isNotEmpty && mounted) {
+      setState(() => _produtoPremium = r.productDetails.first);
+    }
   }
 
   bool get _temAcesso {
