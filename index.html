@@ -1,20 +1,68 @@
-<h1>Política de Privacidade - Email Guardian AI</h1>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Política de Privacidade — Email Guardian AI</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; line-height: 1.6; color: #1a1a1a; max-width: 760px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 1.6rem; }
+  h2 { font-size: 1.2rem; margin-top: 1.8rem; border-bottom: 1px solid #e2e2e2; padding-bottom: 4px; }
+  ul { padding-left: 1.2rem; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; }
+  .updated { color: #666; font-size: 0.9rem; }
+  a { color: #1558d6; }
+</style>
+</head>
+<body>
 
-<p>O Email Guardian AI respeita sua privacidade.</p>
+<h1>Política de Privacidade — Email Guardian AI</h1>
+<p class="updated">Última atualização: 20 de agosto de 2026</p>
 
+<p>O Email Guardian AI ("aplicativo", "nós") respeita a sua privacidade. Esta política explica, de forma transparente, quais dados o aplicativo acessa, como eles são usados e com quem são compartilhados.</p>
+
+<h2>1. Dados que o aplicativo acessa</h2>
+<p>O aplicativo acessa a sua conta de e-mail (Gmail e/ou contas IMAP) <strong>somente após a sua autorização explícita</strong>, para analisar mensagens em busca de ameaças (phishing, golpes e spam). Os dados acessados incluem:</p>
 <ul>
-<li>O aplicativo acessa sua conta de e-mail apenas com sua autorização.</li>
-<li>Nenhum dado é armazenado em servidores externos.</li>
-<li>Todas as análises são feitas localmente no dispositivo.</li>
-<li>O aplicativo não compartilha dados com terceiros.</li>
+<li>remetente da mensagem;</li>
+<li>assunto da mensagem;</li>
+<li>um trecho do conteúdo do e-mail (até aproximadamente 1.000 caracteres).</li>
+</ul>
+<p>O aplicativo <strong>não</strong> acessa anexos e <strong>não</strong> lê o corpo completo das mensagens.</p>
+
+<h2>2. Como os dados são processados</h2>
+<p>Para classificar cada e-mail como seguro, suspeito ou perigoso, o remetente, o assunto e o trecho descritos acima são enviados, por conexão criptografada (HTTPS), a um servidor de processamento próprio (Cloudflare Workers), que os encaminha a um provedor de inteligência artificial (Anthropic — modelo Claude) exclusivamente para gerar a análise de segurança e devolvê-la ao aplicativo.</p>
+<ul>
+<li>Esse processamento é <strong>transitório</strong>: os dados são usados apenas para produzir a análise daquela mensagem e <strong>não são armazenados</strong> em nossos servidores.</li>
+<li>Os dados <strong>não</strong> são usados para publicidade, <strong>não</strong> são vendidos e <strong>não</strong> são utilizados para treinar modelos de inteligência artificial.</li>
+<li>Não mantemos banco de dados com o conteúdo dos seus e-mails. As credenciais de acesso ficam armazenadas de forma segura apenas no seu próprio dispositivo.</li>
 </ul>
 
-<p>O acesso ao Gmail é utilizado exclusivamente para:</p>
+<h2>3. Uso Limitado (Google API Services User Data Policy)</h2>
+<p>O uso e a transferência, pelo Email Guardian AI, de informações recebidas das APIs do Google obedecem à
+<a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Política de Dados de Usuários dos Serviços de API do Google (Google API Services User Data Policy)</a>, inclusive aos requisitos de Uso Limitado (<em>Limited Use</em>).</p>
+<p><em>Email Guardian AI's use and transfer of information received from Google APIs to any other app will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</em></p>
 
+<h2>4. Compartilhamento com terceiros</h2>
+<p>Não compartilhamos seus dados com terceiros, exceto com os provedores estritamente necessários para executar a análise de segurança solicitada por você:</p>
 <ul>
-<li>leitura de emails</li>
-<li>identificação de ameaças</li>
-<li>organização da caixa de entrada</li>
+<li><strong>Cloudflare, Inc.</strong> — infraestrutura de processamento das requisições;</li>
+<li><strong>Anthropic</strong> — provedor do modelo de inteligência artificial que gera a análise.</li>
+</ul>
+<p>Esses provedores tratam os dados apenas para devolver o resultado da análise, conforme as políticas de privacidade deles.</p>
+
+<h2>5. Exclusão e retenção de dados</h2>
+<ul>
+<li>Como os dados de e-mail <strong>não são armazenados</strong> em nossos servidores, não há histórico a ser excluído do nosso lado.</li>
+<li>Você pode revogar o acesso do aplicativo à sua conta a qualquer momento, em
+<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a> (para o Gmail) ou removendo a conta dentro do próprio aplicativo.</li>
+<li>Desinstalar o aplicativo apaga todos os dados e credenciais guardados localmente no seu dispositivo.</li>
+<li>Para solicitar a exclusão de qualquer dado ou tirar dúvidas, entre em contato pelo e-mail abaixo.</li>
 </ul>
 
-<p>O usuário pode revogar o acesso a qualquer momento.</p>
+<h2>6. Contato</h2>
+<p>Responsável: Wagner Garcia<br>
+E-mail: <a href="mailto:suporte@solocrt.com.br">suporte@solocrt.com.br</a></p>
+
+</body>
+</html>
